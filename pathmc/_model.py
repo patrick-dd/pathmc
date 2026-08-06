@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import sys
 import warnings
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from typing import Any, Literal
 
@@ -65,6 +65,7 @@ from pathmc.sensitivity import SensitivityResult, compute_sensitivity
 from pathmc.simulate import (
     DoResult,
     EstimandResult,
+    run_counterfactual,
     run_do_panel_unified,
     run_do_pymc,
 )
@@ -95,6 +96,74 @@ def _observed_carry(pymc_model: pm.Model, enabled: bool) -> Iterator[None]:
         yield
     finally:
         flag.set_value(previous)
+
+
+def _reject_hsgp_out_of_bounds(
+    spec: Spec,
+    data: nw.DataFrame,
+    interventions: Mapping[str, float | np.ndarray],
+) -> None:
+    """Raise when an intervention falls outside an HSGP basis boundary."""
+    from pathmc.hsgp import hsgp_intervention_bounds
+
+    hsgp_bounds = hsgp_intervention_bounds(spec, data)
+    for var, val in interventions.items():
+        if var not in hsgp_bounds:
+            continue
+        lo, hi = hsgp_bounds[var]
+        if isinstance(val, np.ndarray):
+            outside = float(val.min()) < lo or float(val.max()) > hi
+            val_desc = f"[{float(val.min()):.2f}, {float(val.max()):.2f}]"
+        else:
+            outside = val < lo or val > hi
+            val_desc = f"{val:.2f}"
+        if outside:
+            raise ValueError(
+                f"Intervention value {val_desc} for '{var}' is outside "
+                f"the HSGP basis boundary [{lo:.2f}, {hi:.2f}] frozen "
+                f"from the fitted data. Beyond this boundary the basis "
+                f"eigenfunctions alias, so the result would be "
+                f"meaningless rather than an extrapolation. Refit with "
+                f"a larger c or an explicit L to widen the valid "
+                f"region."
+            )
+
+
+def _warn_extrapolation(
+    data: nw.DataFrame, interventions: Mapping[str, float | np.ndarray]
+) -> None:
+    """Warn when an intervention is outside its observed data range."""
+    for var, val in interventions.items():
+        if var not in data.columns:
+            continue
+        col_min = data[var].min()
+        col_max = data[var].max()
+        if col_min is None or col_max is None:
+            continue
+        lo = float(col_min)
+        hi = float(col_max)
+        try:
+            values = np.asarray(val, dtype=float)
+        except (TypeError, ValueError):
+            continue
+        if values.ndim != 0:
+            if values.size == 0:
+                continue
+            val_lo, val_hi = float(values.min()), float(values.max())
+            out_of_range = val_lo < lo or val_hi > hi
+            val_desc = f"[{val_lo:.2f}, {val_hi:.2f}]"
+        else:
+            value = float(values)
+            out_of_range = value < lo or value > hi
+            val_desc = f"{value:.2f}"
+        if out_of_range:
+            warnings.warn(
+                f"Intervention value {val_desc} for '{var}' is outside "
+                f"the observed data range [{lo:.2f}, {hi:.2f}]. Results are "
+                "extrapolations and should be interpreted with caution.",
+                UserWarning,
+                stacklevel=3,
+            )
 
 
 class PathModel:
@@ -1141,54 +1210,8 @@ class PathModel:
         assert self._gen_model is not None
 
         if set:
-            from pathmc.hsgp import hsgp_intervention_bounds
-
-            hsgp_bounds = hsgp_intervention_bounds(self._spec, self._data)
-            for var, val in set.items():
-                if var not in hsgp_bounds:
-                    continue
-                lo, hi = hsgp_bounds[var]
-                if isinstance(val, np.ndarray):
-                    outside = float(val.min()) < lo or float(val.max()) > hi
-                    val_desc = f"[{float(val.min()):.2f}, {float(val.max()):.2f}]"
-                else:
-                    outside = val < lo or val > hi
-                    val_desc = f"{val:.2f}"
-                if outside:
-                    raise ValueError(
-                        f"Intervention value {val_desc} for '{var}' is outside "
-                        f"the HSGP basis boundary [{lo:.2f}, {hi:.2f}] frozen "
-                        f"from the fitted data. Beyond this boundary the basis "
-                        f"eigenfunctions alias, so the result would be "
-                        f"meaningless rather than an extrapolation. Refit with "
-                        f"a larger c or an explicit L to widen the valid "
-                        f"region."
-                    )
-            for var, val in set.items():
-                if var not in self._data.columns:
-                    continue
-                col_min = self._data[var].min()
-                col_max = self._data[var].max()
-                if col_min is None or col_max is None:
-                    continue
-                lo = float(col_min)
-                hi = float(col_max)
-                if isinstance(val, np.ndarray):
-                    val_lo, val_hi = float(val.min()), float(val.max())
-                    out_of_range = val_lo < lo or val_hi > hi
-                    val_desc = f"[{val_lo:.2f}, {val_hi:.2f}]"
-                else:
-                    out_of_range = val < lo or val > hi
-                    val_desc = f"{val:.2f}"
-                if out_of_range:
-                    warnings.warn(
-                        f"Intervention value {val_desc} for '{var}' is outside "
-                        f"the observed data range [{lo:.2f}, {hi:.2f}]. "
-                        f"Results are extrapolations and should be interpreted "
-                        f"with caution.",
-                        UserWarning,
-                        stacklevel=2,
-                    )
+            _reject_hsgp_out_of_bounds(self._spec, self._data, set)
+            _warn_extrapolation(self._data, set)
 
         if simulate_over == "time":
             if self._panel_info is None:
@@ -1227,6 +1250,75 @@ class PathModel:
             # Non-scan panel models fall through to the cross-sectional path.
 
         return self._run_do(set, kind)
+
+    def counterfactual(
+        self,
+        evidence: dict[str, float],
+        do: dict[str, float],
+        allow_partial_evidence: bool = False,
+    ) -> DoResult:
+        """Compute unit-level counterfactual outcomes.
+
+        Implements Pearl's three-step procedure (abduction → action →
+        prediction) using posterior draws. Unlike :meth:`do`, which answers
+        population-level questions with exogenous terms at their means,
+        counterfactuals infer individual-specific exogenous values from
+        *evidence* before simulating the intervention in *do*.
+
+        Parameters
+        ----------
+        evidence : dict[str, float]
+            Observed values for a specific individual. Used in the
+            abduction step to recover their exogenous (U) terms.
+        do : dict[str, float]
+            Intervention values (same format as ``do(set=...)``).
+        allow_partial_evidence : bool
+            If ``True``, missing evidence is assigned its population mean
+            (U = 0) with a warning. By default, all model variables must be
+            supplied so a counterfactual cannot silently mix individual and
+            population information.
+
+        Returns
+        -------
+        DoResult
+            Posterior over counterfactual outcomes with ``.mean(var)``,
+            ``.hdi(var)``, and contrast arithmetic.
+
+        Raises
+        ------
+        RuntimeError
+            If called before ``.fit()``.
+        ValueError
+            If *evidence* or *do* keys are invalid, an intervention on an
+            ``hsgp()`` input falls outside the basis boundary frozen from
+            the fitted data, or the model uses non-Gaussian families.
+        NotImplementedError
+            If the model is a panel model.
+        """
+        idata = self._require_fitted("counterfactual")
+        if self._panel_info is not None:
+            raise NotImplementedError(
+                "counterfactual() is not yet supported for panel models."
+            )
+        if self._graph_info.latent:
+            latent = ", ".join(f"'{var}'" for var in sorted(self._graph_info.latent))
+            raise NotImplementedError(
+                "counterfactual() is not yet supported for models with latent "
+                f"variables ({latent}). Abduction requires observed values for "
+                "every structural variable."
+            )
+        assert self._data is not None
+        _reject_hsgp_out_of_bounds(self._spec, self._data, do)
+        _warn_extrapolation(self._data, do)
+        return run_counterfactual(
+            spec=self._spec,
+            graph_info=self._graph_info,
+            idata=idata,
+            evidence=evidence,
+            do=do,
+            families=self._families,
+            allow_partial_evidence=allow_partial_evidence,
+        )
 
     def ate(
         self,
