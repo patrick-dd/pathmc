@@ -616,11 +616,20 @@ class PathModel:
             )
         assert self._data is not None
         return build_standardized_effects(
-            self._spec, idata, self._data, latent=self._latent
+            self._spec,
+            idata,
+            self._data,
+            latent=self._latent,
+            families=self._families,
         )
 
     def effect(self, path: str) -> EffectResult:
         """Compute the effect along a causal path in the DAG.
+
+        Uses the product-of-coefficients method, which assumes linear
+        structural equations (identity link). For multi-edge paths that
+        cross non-Gaussian link scales, use :meth:`simulate` with
+        ``do()`` interventions instead.
 
         Parameters
         ----------
@@ -640,9 +649,12 @@ class PathModel:
             ``.fit()``.
         ValueError
             If a node is not endogenous or an edge does not exist.
+        NotImplementedError
+            If a multi-edge path includes a non-Gaussian edge target
+            whose coefficient would be multiplied across link scales.
         """
         idata = self._require_fitted("effect")
-        return compute_path_effect(path, self._spec, idata)
+        return compute_path_effect(path, self._spec, idata, families=self._families)
 
     def fit(
         self,
