@@ -54,7 +54,7 @@ It predicts counterfactual outcomes for each unit under different treatment valu
 3. ATE = mean(Ŷ(X=1) − Ŷ(X=0))
 
 pathmc provides this workflow natively via [`adjustment_model()`](model-specification.qmd): given a structural DAG, it selects a valid backdoor adjustment set, builds the reduced outcome equation, and exposes `ate()`, `cate()`, `att()`, and `atu()` on the fitted adjustment model.
-For a worked comparison of structural `do()` versus native adjustment on the same DAG, see the forthcoming [SCM vs. adjustment](scm-vs-adjustment.qmd) Concepts page.
+For a worked comparison of structural `do()` versus native adjustment on the same DAG, see [SCM vs Regression Adjustment](scm-vs-adjustment.qmd).
 
 [Bambi](https://bambinos.github.io/bambi/) remains a useful **external** option when you need modeling features pathmc does not own: GAMs, rich crossed or nested multilevel formulas, and distributional regression beyond pathmc's structural families.
 Bambi's `interpret` module (`comparisons`, `slopes`) performs outcome-regression standardization on a hand-specified formula when identification assumptions hold.
@@ -136,6 +136,8 @@ pathmc is a DAG-aware Bayesian causal modeling package with two first-class esti
 2. **Native regression adjustment** via `adjustment_model()`: derive a backdoor adjustment set from the same DAG, fit a single outcome equation, and estimate via outcome-regression standardization.
 
 Both estimators share the same identification layer: [`adjustment_sets()`](causal-inference.qmd), [`is_identifiable()`](causal-inference.qmd), and [`collider_warnings()`](causal-inference.qmd) work on the structural DAG regardless of which estimator you choose downstream.
+
+For a worked side-by-side comparison of structural `ate()` and native `adjustment_model().ate()` on one DAG and dataset, see [SCM vs Regression Adjustment](scm-vs-adjustment.qmd).
 
 pathmc does not try to replicate Bambi's full regression modeling surface.
 When you need GAMs, rich multilevel formulas, or distributional regression beyond pathmc's structural families, Bambi remains the right external tool.
