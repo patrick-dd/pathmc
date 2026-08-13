@@ -30,11 +30,13 @@ check_lint: ## Check formatting, linting, and types without making changes
 	uv run ruff format --diff --check .
 	uv run mypy --ignore-missing-imports
 
+TEST_ENV = OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+
 test-fast: ## Run fast tests, excluding slow MCMC tests
-	uv run pytest -x -v -m "not slow"
+	$(TEST_ENV) uv run pytest -x -v -n auto --dist loadscope -m "not slow"
 
 test: ## Run all tests with coverage, including slow integration tests
-	uv run pytest -x -v --cov=pathmc --cov-report=term-missing
+	$(TEST_ENV) uv run pytest -x -v -n auto --dist loadscope --cov=pathmc --cov-report=term-missing
 
 docs: jupyter-kernel ## Build the documentation site
 	JUPYTER_PATH=$(VENV_JUPYTER) uv run great-docs build
