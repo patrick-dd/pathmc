@@ -609,6 +609,14 @@ class EstimandResult(_DrawStorageMixin, ResultReprMixin):
         The treatment variable that was intervened on.
     estimand : str
         Estimand label, e.g. ``"ATE"``, ``"CATE"``, ``"ATT"``, ``"ATU"``.
+    estimator : str
+        Estimator label, e.g. ``"structural"`` or ``"regression_adjustment"``.
+    causal : bool
+        Whether the estimand is causal.
+    interventional : bool
+        Whether the estimand is interventional.
+    identifiable : bool | None
+        Whether the effect was identifiable; ``None`` when unknown.
     """
 
     def __init__(
@@ -633,9 +641,9 @@ class EstimandResult(_DrawStorageMixin, ResultReprMixin):
         self._identifiable = identifiable
         self._ds.attrs.update({
             "estimator": estimator,
+            "causal": causal,
             "interventional": interventional,
             "identifiable": identifiable,
-            "causal": causal,
         })
 
     @classmethod
@@ -645,6 +653,10 @@ class EstimandResult(_DrawStorageMixin, ResultReprMixin):
         outcome: str,
         treatment: str,
         estimand: str,
+        estimator: str = "structural",
+        causal: bool = True,
+        interventional: bool = True,
+        identifiable: bool | None = None,
     ) -> EstimandResult:
         """Wrap a :class:`DoResult` contrast as a focused estimand result."""
         return cls(
@@ -652,6 +664,10 @@ class EstimandResult(_DrawStorageMixin, ResultReprMixin):
             outcome=outcome,
             treatment=treatment,
             estimand=estimand,
+            estimator=estimator,
+            causal=causal,
+            interventional=interventional,
+            identifiable=identifiable,
         )
 
     @property
@@ -666,12 +682,12 @@ class EstimandResult(_DrawStorageMixin, ResultReprMixin):
 
     @property
     def estimator(self) -> str:
-        """Estimator backend that produced this result."""
+        """Estimator label (e.g. ``"structural"``, ``"regression_adjustment"``)."""
         return self._estimator
 
     @property
     def causal(self) -> bool:
-        """Whether the result supports a causal interpretation."""
+        """Whether this estimand is causal."""
         return self._causal
 
     @property
@@ -681,7 +697,7 @@ class EstimandResult(_DrawStorageMixin, ResultReprMixin):
 
     @property
     def identifiable(self) -> bool | None:
-        """Backdoor identifiability of the treatment-outcome pair, if defined."""
+        """Whether the effect was identifiable; ``None`` when unknown."""
         return self._identifiable
 
     def _resolve(self, var: str | None) -> str:
